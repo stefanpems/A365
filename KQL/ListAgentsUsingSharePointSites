@@ -1,0 +1,28 @@
+// Helper: <ID> levels can be property bags (expanded as [key, value]) or arrays; always return the value
+let _val = (x:dynamic) { iff(gettype(x) == "array" and array_length(x) == 2 and gettype(x[0]) == "string", x[1], x) };
+AgentsInfo
+// Keep only the latest snapshot of each agent
+| summarize arg_max(Timestamp, *) by AgentId
+| where LifecycleStatus != "Deleted"
+// Only agents exposing declarative metadata
+| where isnotempty(RawAgentInfo.declarativeCopilotMetadata)
+// Walk RawAgentInfo / declarativeCopilotMetadata / <ID> / capabilities / <ID> / itemsByUrl / <ID> / url
+| mv-expand kind=array metadata = RawAgentInfo.declarativeCopilotMetadata
+| extend metadata = _val(metadata)
+| mv-expand kind=array capability = metadata.capabilities
+| extend capability = _val(capability)
+| mv-expand kind=array item = capability.itemsByUrl
+| extend item = _val(item)
+| extend KnowledgeUrl = url_decode(tostring(item.url))
+// Keep SharePoint URLs only (skip public websites)
+| where KnowledgeUrl contains ".sharepoint.com"
+// Reduce each URL to its site root (/sites/<name> or /teams/<name>), else to the host
+| extend Site = tolower(coalesce(
+      extract(@"^(https://[^/]+/(sites|teams)/[^/?#]+)", 1, KnowledgeUrl),
+      extract(@"^(https://[^/]+)", 1, KnowledgeUrl)))
+// One row per site, with the agents using it
+| summarize AgentCount = dcount(AgentId),
+            Agents = make_set(Name),
+            Platforms = make_set(Platform)
+  by Site
+| order by AgentCount desc
