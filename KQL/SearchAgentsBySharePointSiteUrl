@@ -1,0 +1,30 @@
+// Input: SharePoint site URL to search for
+let siteUrl = "https://contoso.sharepoint.com/sites/HR";
+// Normalize the target URL: decode, lowercase, strip trailing slashes
+let target  = tolower(trim_end(@"/+", url_decode(siteUrl)));
+// Helper: <ID> levels can be property bags (expanded as [key, value]) or arrays; always return the value
+let _val = (x:dynamic) { iff(gettype(x) == "array" and array_length(x) == 2 and gettype(x[0]) == "string", x[1], x) };
+AgentsInfo
+// Keep only the latest snapshot of each agent
+| summarize arg_max(Timestamp, *) by AgentId
+| where LifecycleStatus != "Deleted"
+// Only agents exposing declarative metadata
+| where isnotempty(RawAgentInfo.declarativeCopilotMetadata)
+// Walk RawAgentInfo / declarativeCopilotMetadata / <ID> / capabilities / <ID> / itemsByUrl / <ID> / url
+| mv-expand kind=array metadata = RawAgentInfo.declarativeCopilotMetadata
+| extend metadata = _val(metadata)
+| mv-expand kind=array capability = metadata.capabilities
+| extend capability = _val(capability)
+| mv-expand kind=array item = capability.itemsByUrl
+| extend item = _val(item)
+| extend KnowledgeUrl = tostring(item.url)
+| where isnotempty(KnowledgeUrl)
+// Normalize the knowledge URL the same way as the target
+| extend NormalizedUrl = tolower(trim_end(@"/+", url_decode(KnowledgeUrl)))
+// Match the site itself or any library, folder or file inside it
+| where NormalizedUrl == target or NormalizedUrl startswith strcat(target, "/")
+// One row per agent, with all matching knowledge URLs
+| summarize KnowledgeUrls = make_set(KnowledgeUrl)
+  by AgentId, Name, Platform, PublishedStatus, LifecycleStatus,
+     Owners = tostring(Owners), SharedWith = tostring(SharedWith), LastUpdatedDateTime
+| order by Name asc
